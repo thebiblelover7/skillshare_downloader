@@ -1,0 +1,321 @@
+#!/bin/bash
+
+# Copyright Adriel Sand (@thebiblelover7) and contributors. Contribute to the project
+# at https://github.com/thebiblelover7/skillshare_downloader
+# Version 1.0
+
+# Catch exit commands
+trap "echo; echo; exit" INT
+
+###########################
+# Parse Arguments/Options #
+###########################
+
+version="1.0"
+executable_name="$(basename "$0")"
+
+project_info(){
+    cat <<EOF
+${executable_name} v${version} Copyright Adriel Sand (@thebiblelover7) and contributors. 
+Contribute to the project at https://github.com/thebiblelover7/skillshare_downloader
+EOF
+}
+
+help_message(){
+    echo "Usage: ${executable_name} [-rx] (-c class_id) [-j /path/to/headers] [-d /path/to/output] [-y \"<extra yt-dlp options>\"]"
+    echo
+    project_info
+    cat <<EOF
+
+Options:
+    -c:     [Required] Class id; taken from the url 
+            (https://www.skillshare.com/en/classes/full-class-name/<class id>)
+
+    -j:     Path to request headers; found by inspecting the network
+            request made to Skillshare (default: \$HOME/.config/skillshare.headers)
+
+    -d:     Path to output directory of video files (default: \$PWD)
+
+    -r:     Refresh class details; useful if class has been updated
+            (will use cache by default)
+
+    -y:     Pass extra options to yt-dlp
+
+    -h:     Show this help message
+
+    -x:     Enable debug logging
+EOF
+}
+
+while getopts "xrhj:c:d:y:" opt; do
+    case $opt in
+        j)
+            # Set login/cookie jar
+            login_jar="${OPTARG}"
+            ;;
+        d)
+            # Set output directory and remove trailing slash
+            output_dir="${OPTARG%/}"
+            ;;
+        c)
+            # Set Class ID
+            class_id="${OPTARG}"
+            ;;
+        r)
+            # Set class details to refresh
+            class_details_json_exists=false
+            class_details_html_exists=false
+            ;;
+        h)
+            # Show help message
+            help_message
+            exit 0
+            ;;
+        x)
+            # Enable debugging
+            set -x
+            ;;
+        y)
+            # Set extra yt-dlp arguments
+            downloader_options="${OPTARG}"
+            ;;
+        :)
+            echo "Option \"-$OPTARG\" requires an argument." >&2
+            help_message
+            exit 1
+            ;;
+        \?)
+            echo "Invalid option: \"-$OPTARG\"" >&2
+            help_message
+            exit 1
+            ;;
+    esac
+done
+
+# Check if required options are set; otherwise exit with error
+if [[ -z ${class_id+x} ]]
+then
+    echo "Options -c is required"
+    help_message
+    exit 1
+fi
+
+# Set default output directory to $PWD
+if [[ -z ${output_dir+x} ]]
+then
+    output_dir="$PWD"
+    echo "Option -d not set; assuming default (${output_dir})"
+fi
+
+# Set default request header path to $HOME/.config/skillshare.headers
+if [[ -z ${login_jar+x} ]]
+then
+    login_jar="$HOME/.config/skillshare.headers"
+    echo "Option -j not set; attempting to use default (${login_jar})"
+fi
+
+if [[ ! -f "${login_jar}" ]]
+then
+    echo "${login_jar} does not exist."
+    echo "Please create that file, or specify -j"
+    echo
+    help_message
+    exit 2
+fi
+
+# Print out project info
+project_info
+
+
+##########################
+# Dependencies           #
+##########################
+
+# Verify that all dependencies are installed and available
+dependencies=("getopts" "curl" "jq" "grep" "sed" "find" "yt-dlp")
+
+for dependency in ${dependencies[@]}
+do
+    if ! command -v $dependency >/dev/null 2>&1
+    then
+        dependencies_lacking=true
+        echo "Dependency \"$dependency\" not found."
+    fi
+done
+
+if [[ $dependencies_lacking == "true" ]]
+then
+    echo "Please install the above dependencies to use the script"
+    exit 2
+fi
+
+# Persistent Storages
+classes_dir="$HOME/.cache/skillshare"
+mkdir -p ${classes_dir}
+
+# Login Jar parsing with curl syntax
+if [[ $(cat "${login_jar}" | head -n1 | grep -E "^curl" >/dev/null 2>&1; echo $?) == "0" ]]
+then
+    new_login_jar="$(mktemp)"
+    sed -e 's/^  -H '"'"'//' \
+        -e 's/'"'"' \\$//' \
+        -e 's/^curl.*//' < "${login_jar}" > ${new_login_jar}
+
+    login_jar="${new_login_jar}"
+fi
+
+# Get user agent from cookie jar
+user_agent="$(grep "^[Uu]ser-[Aa]gent: "< "${login_jar}")"
+
+# Get cookies from cookie jar
+cookies="$(grep "^[Cc]ookie: "< "${login_jar}")"
+
+tmp_cjar1="$(mktemp)"
+
+# Enable extglob for extended pattern recognition
+shopt -s extglob
+
+##########################
+# Get class details      #
+##########################
+
+class_details_html="${classes_dir}/${class_id}.html"
+: ${class_details_html_exists:=$([ -f "${class_details_html}" ] && echo true || echo false)}
+class_details_json="${classes_dir}/${class_id}.json"
+: ${class_details_json_exists:=$([ -f "${class_details_json}" ] && echo true || echo false)}
+
+echo
+echo "###########################"
+echo "# Getting Class Details   #"
+echo "###########################"
+echo
+
+
+##########################
+# Parse HTML into json   #
+##########################
+
+if [[ "${class_details_json_exists}" == "false" ]]
+then
+
+    if [[ "${class_details_html_exists}" == "false" ]]
+    then
+        # Fetch class details from class home page
+        curl -sS -L "https://www.skillshare.com/en/classes/${class_id}/projects" -c "${tmp_cjar1}" --compressed -H "${user_agent}" \
+            -H "${cookies}" \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8' \
+            -H 'Accept-Language: en-US,en;q=0.5' \
+            -H 'Referer: https://www.skillshare.com/en/lists/watch-history' \
+            -H 'DNT: 1' -H 'Alt-Used: www.skillshare.com' \
+            -H 'Connection: keep-alive' -H 'Upgrade-Insecure-Requests: 1' \
+            -H 'Sec-Fetch-Dest: document' -H 'Sec-Fetch-Mode: navigate' \
+            -H 'Sec-Fetch-Site: same-origin' -H 'Priority: u=0, i' \
+            -H 'Pragma: no-cache' -H 'Cache-Control: no-cache' -H 'TE: trailers' \
+            -o "${class_details_html}" || exit 1
+    else
+        echo "\"${class_details_html}\" exists... skipping fetching "
+    fi
+    echo
+    echo "###########################"
+    echo "# Parsing Class Details   #"
+    echo "###########################"
+    echo
+
+    # Parsing class details from .html
+    cat "${class_details_html}" | grep 'SS.serverBootstrap = ' | sed -e 's/        SS\.serverBootstrap = //g' -e 's/;$//g' > "${class_details_json}"
+
+else
+    echo "\"${class_details_json}\" exists... skipping fetching and parsing details"
+fi
+
+if [[ $(cat ${class_details_json}) == "" ]]
+then
+    echo "${class_details_json} is empty."
+    echo "Please check your request headers and see if authentication is not failing."
+    echo "Also try running the script with \"-x\" for debugging info"
+    echo
+    help_message
+    exit 2
+fi
+
+##########################
+# Download Videos        #
+##########################
+
+get_streams(){
+    # Get streams
+    echo
+    echo "###########################"
+    echo "# Getting Streams for     #"
+    echo "# Video Number: ${cd_order}"
+    echo "# Video id: ${cd_id}       #"
+    echo "# Video name: \"${cd_title}\""
+    echo "###########################"
+    echo
+
+    cd_stream="$(curl -sS -H "Cookie: $(cat ${login_jar})" -H "${user_agent}" --compressed -L "https://www.skillshare.com/sessions/${cd_id}/stream" | jq -r '.streams.[]| select(.type == "hls").url' || exit 2)"
+
+    # Download stream
+    yt-dlp ${downloader_options} --output "${output_dir}/${cd_filename}.%(ext)s" "${cd_stream}"
+}
+
+
+echo
+echo "###########################"
+echo "# Starting Video Fetching #"
+echo "###########################"
+echo
+
+counter=1
+
+cat "${class_details_json}" | jq -r '.pageData.videoPlayerData.units.[].sessions.[] | .displayRank, .title, .id' | while read line
+do
+    case $counter in
+        '1')
+            cd_order="$line"
+            ;;
+        '2')
+            cd_title="$line"
+            ;;
+        '3')
+            cd_id="$line"
+
+            # Set Filename
+            #cd_filename="${cd_order} ${cd_title//[\/\0\`\*\|\"\']/}"
+            #cd_filename="${cd_filename//+( )/ }"
+            cd_filename="${cd_order} ${cd_title//[\/\0\`\*\|\"\'\:\.]/}"
+            cd_filename="${cd_filename//+( )/ }"
+
+            # Neovim doesn't like the previous regex with quotes "
+
+            video_exists=$(find "${output_dir}/" -maxdepth 1 -name "${cd_filename}.*" | head -n 1)
+            video_in_progress=$(find "${output_dir}/" -maxdepth 1 -name "${cd_filename}.*.ytdl" | head -n 1)
+            
+
+            if [[ -z "${video_exists}" ]]
+            then
+                get_streams
+            else 
+                if [[ "${video_in_progress}" != "" ]]
+                then
+                    echo "Video \"$cd_filename\" in progress... continuing download... "
+                    get_streams
+                else
+                    echo "Video \"$cd_filename\" exists... skipping... "
+                fi
+            fi
+            counter=0
+            ;;
+    esac
+    counter=$(($counter + 1))
+done
+
+##########################
+# CLEANUP                #
+##########################
+
+#rm "${tmp_cjar1}"
+#if [[ ! -z ${new_login_jar:x} ]]
+#then
+#    rm "${new_login_jar}"
+#fi
