@@ -153,7 +153,7 @@ fi
 classes_dir="$HOME/.cache/skillshare"
 mkdir -p ${classes_dir}
 
-# Login Jar parsing with curl syntax
+# Login Jar parsing with curl syntax for Chrome
 if [[ $(cat "${login_jar}" | head -n1 | grep -E "^curl" >/dev/null 2>&1; echo $?) == "0" ]]
 then
     new_login_jar="$(mktemp)"
@@ -253,7 +253,7 @@ get_streams(){
     echo "###########################"
     echo
 
-    cd_stream="$(curl -sS -H "Cookie: $(cat ${login_jar})" -H "${user_agent}" --compressed -L "https://www.skillshare.com/sessions/${cd_id}/stream" | jq -r '.streams.[]| select(.type == "hls").url' || exit 2)"
+    cd_stream="$(curl -sS -H "${cookies}" -H "${user_agent}" --compressed -L "https://www.skillshare.com/sessions/${cd_id}/stream" | jq -r '.streams.[]| select(.type == "hls").url' || exit 2)"
 
     # Download stream
     yt-dlp ${downloader_options} --output "${output_dir}/${cd_filename}.%(ext)s" "${cd_stream}"
@@ -314,8 +314,8 @@ done
 # CLEANUP                #
 ##########################
 
-#rm "${tmp_cjar1}"
-#if [[ ! -z ${new_login_jar:x} ]]
-#then
-#    rm "${new_login_jar}"
-#fi
+rm "${tmp_cjar1}"
+if [[ ! -z ${new_login_jar:x} ]]
+then
+    rm "${new_login_jar}"
+fi
