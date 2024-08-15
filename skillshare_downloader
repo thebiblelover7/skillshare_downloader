@@ -2,7 +2,7 @@
 
 # Copyright Adriel Sand (@thebiblelover7) and contributors. Contribute to the project
 # at https://github.com/thebiblelover7/skillshare_downloader
-# Version 1.0
+# Version 1.1
 
 # Catch exit commands
 trap "echo; echo; exit" INT
@@ -11,7 +11,7 @@ trap "echo; echo; exit" INT
 # Parse Arguments/Options #
 ###########################
 
-version="1.0"
+version="1.1"
 executable_name="$(basename "$0")"
 
 project_info(){
