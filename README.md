@@ -1,5 +1,8 @@
 # skillshare_downloader
 
+> [!WARNING]
+> This project is now **archived** as I (@thebiblelover7) no longer have Skillshare. You are free to fork and improve this :).
+
 A bash script to download Skillshare classes with a premium account. It gets class information, passes the stream information to `yt-dlp` and downloads it.
 
 ## Usage
